@@ -62,6 +62,21 @@ function useFallbackImage(event: React.SyntheticEvent<HTMLImageElement>) {
   event.currentTarget.src = "/globe.svg";
 }
 
+// Turn a conversational question into a short GNews search phrase.
+// Example: "Tell me Saudia jet latest news" becomes "Saudia jet".
+function createNewsSearchQuery(question: string) {
+  const cleanedQuestion = question
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .replace(
+      /\b(tell|give|show|please|me|about|what|is|are|the|latest|today|current|breaking|news|update|updates)\b/gi,
+      " "
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return cleanedQuestion || question.slice(0, 100);
+}
+
 export default function Home() {
   // Start with demonstration content.
   // Live API results replace this content after loading.
@@ -378,6 +393,46 @@ export default function Home() {
     ]);
 
     try {
+      // Normal follow-up questions use the articles already displayed.
+      let chatArticles = displayedNews.slice(0, 8);
+      const asksForFreshTopic =
+        /\b(latest|today'?s|current|breaking|updates?)\b/i.test(asked) &&
+        !/\b(summarize|compare|explain|these|this)\b/i.test(asked);
+
+      // Search live news when the page has no context or the user asks for a
+      // fresh topic. This keeps the AI grounded in verified GNews articles.
+      if (!chatArticles.length || asksForFreshTopic) {
+        const newsQuery = createNewsSearchQuery(asked);
+        const parameters = new URLSearchParams({ q: newsQuery, lang: language });
+        if (country) parameters.set("country", country);
+
+        const newsResponse = await fetch(`/api/news?${parameters.toString()}`);
+        const newsData = await newsResponse.json();
+
+        if (!newsResponse.ok) {
+          throw new Error(newsData.error || "Unable to search live news.");
+        }
+
+        chatArticles = Array.isArray(newsData.articles)
+          ? newsData.articles.slice(0, 8)
+          : [];
+
+        // Show the same search on the page so the answer remains transparent.
+        if (chatArticles.length) {
+          setSearch(newsQuery);
+          setViewSaved(false);
+        } else {
+          setMessages((old) => [
+            ...old.slice(0, -1),
+            {
+              role: "assistant",
+              text: `I could not find verified recent articles for “${newsQuery}”. Try a broader spelling or topic.`,
+            },
+          ]);
+          return;
+        }
+      }
+
       const response = await fetch("/api/chat", {
         method: "POST",
 
@@ -389,7 +444,7 @@ export default function Home() {
           question: asked,
 
           // Limit context to avoid unnecessarily large model requests.
-          articles: displayedNews.slice(0, 8),
+          articles: chatArticles,
         }),
       });
 
